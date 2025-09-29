@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# NefariousScanner - nefs
+# Lightweight Fuzzing Launcher
+set -euo pipefail
+IFS=$'\n\t'
+
+# ------------------ CONFIG (edit if you want different paths) ------------------
+WORDLIST_DIR="/opt/SecLists/Discovery/Web-Content/DirBuster-2007_directory-list-2.3-small.txt"
+WORDLIST_EXT="/opt/SecLists/Discovery/Web-Content/web-extensions.txt"
+WORDLIST_SUB="/opt/SecLists/Discovery/DNS/subdomains-top1million-5000.txt"
+WORDLIST_PARAMS="/opt/SecLists/Discovery/Web-Content/burp-parameter-names.txt"
+WORDLIST_BLACKCHARS="/opt/SecLists/Fuzzing/alphanum-case-extra.txt"
+GOBUSTER_WORDLIST="/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+# --------------------------------------------------------------------------------
+
+LOGO() {
+    # print logo in purple (magenta)
+    printf "\e[35m"
+    cat <<'EOF'
+
+ooooo      ooo            .o88o.                     o8o                                  .oooooo..o                                                               
+`888b.     `8'            888 `"                     `"'                                 d8P'    `Y8                                                               
+ 8 `88b.    8   .ooooo.  o888oo   .oooo.   oooo d8b oooo   .ooooo.  oooo  oooo   .oooo.o Y88bo.       .ooooo.   .oooo.   ooo. .oo.   ooo. .oo.    .ooooo.  oooo d8b
+ 8   `88b.  8  d88' `88b  888    `P  )88b  `888""8P `888  d88' `88b `888  `888  d88(  "8  `"Y8888o.  d88' `"Y8 `P  )88b  `888P"Y88b  `888P"Y88b  d88' `88b `888""8P
+ 8     `88b.8  888ooo888  888     .oP"888   888      888  888   888  888   888  `"Y88b.       `"Y88b 888        .oP"888   888   888   888   888  888ooo888  888    
+ 8       `888  888    .o  888    d8(  888   888      888  888   888  888   888  o.  )88b oo     .d8P 888   .o8 d8(  888   888   888   888   888  888    .o  888    
+o8o        `8  `Y8bod8P' o888o   `Y888""8o d888b    o888o `Y8bod8P'  `V88V"V8P' 8""888P' 8""88888P'  `Y8bod8P' `Y888""8o o888o o888o o888o o888o `Y8bod8P' d888b   
+
+
+      Lightweight Fuzzing Launcher - NefariousScanner
+
+EOF
+    printf "\e[0m\n"
+}
+
+# helper to pause
+pause() { read -r -p "$*"; }
+
+# Extract host and port from provided URL
+extract_host_port() {
+    local url_no_scheme hostport host port
+    url_no_scheme="${1#*://}"
+    hostport="${url_no_scheme%%/*}"
+    if [[ "${hostport}" == *:* ]]; then
+        host="${hostport%%:*}"
+        port="${hostport#*:}"
+    else
+        host="${hostport}"
+        port=""
+    fi
+    printf '%s %s' "$host" "$port"
+}
+
+# Run command with confirmation
+run_command() {
+    local final="$1"
+    printf "\n[+] Final command:\n%s\n\n" "$final"
+    while true; do
+        read -r -p "Run this command now? [y/N]: " yn
+        yn="${yn:-N}"
+        case "$yn" in
+            [Yy]* )
+                printf "[+] Starting fuzzing (press Ctrl-C to stop)...\n\n"
+                # use 'bash -c' so we preserve quoting the user may have supplied
+                bash -c "$final"
+                break
+                ;;
+            [Nn]* )
+                printf "[+] Command not executed.\n"
+                break
+                ;;
+            * ) printf "Please answer y or n.\n" ;;
+        esac
+    done
+}
+
+# Ask for header if needed (returns HEADER string, safely quoted)
+read_header() {
+    read -r -p $'Enter a special header to add (leave empty to skip). Example: Cookie: 12345wer\nHeader: ' header
+    header="${header#"${header%%[![:space:]]*}"}"   # ltrim
+    header="${header%"${header##*[![:space:]]}"}"   # rtrim
+    if [[ -n "$header" ]]; then
+        # We'll return a safely quoted header fragment for appending into CMD string
+        printf '%s' "-H '$header'"
+    else
+        printf ''
+    fi
+}
+
+# MAIN MENU and submenus follow
+main_menu() {
+    clear
+    LOGO
+    printf '\nChoose a tool to run:\n'
+    printf ' 1) ffuf\n 2) dirsearch\n 3) wfuzz (subdomain)\n 4) gobuster\n 0) Exit\n\n'
+    read -r -p "Enter choice [0-4]: " choice
+    case "$choice" in
+        1) ffuf_menu ;;
+        2) dirsearch_menu ;;
+        3) wfuzz_menu ;;
+        4) gobuster_menu ;;
+        0) printf "Bye.\n"; exit 0 ;;
+        *) printf "Invalid choice.\n"; sleep 1; main_menu ;;
+    esac
+}
+
+ffuf_menu() {
+    clear; LOGO
+    printf 'FFUF modes:\n 1) Directory fuzzing\n 2) Extension fuzzing (indexFUZZ)\n 3) Page fuzzing (e.g. /blog/FUZZ.php)\n 4) Subdomain fuzzing (Host header)\n 5) Parameter fuzzing - GET\n 6) Parameter fuzzing - POST\n 0) Back\n'
+    read -r -p "Choose mode [0-6]: " m
+    case "$m" in
+        1) ffuf_directory ;;
+        2) ffuf_extension ;;
+        3) ffuf_page ;;
+        4) ffuf_subdomain ;;
+        5) ffuf_param_get ;;
+        6) ffuf_param_post ;;
+        0) main_menu ;;
+        *) printf "Invalid\n"; sleep 1; ffuf_menu ;;
+    esac
+}
+
+ffuf_directory() {
+    read -r -p "Enter target URL (example: http://10.10.10.10:8080 or http://example.com/): " URL
+    HEADER=$(read_header)
+    CMD="ffuf -w '${WORDLIST_DIR}':FUZZ -u '${URL%/}/FUZZ'"
+    [[ -n "$HEADER" ]] && CMD+=" ${HEADER}"
+    run_command "$CMD"
+}
+
+ffuf_extension() {
+    read -r -p "Enter target URL (example: http://10.10.10.10:8080/index): " URL
+    HEADER=$(read_header)
+    CMD="ffuf -w '${WORDLIST_EXT}':FUZZ -u '${URL}FUZZ'"
+    [[ -n "$HEADER" ]] && CMD+=" ${HEADER}"
+    run_command "$CMD"
+}
+
+ffuf_page() {
+    read -r -p "Enter target URL (example: http://10.10.10.10:8080/blog/): " URL
+    HEADER=$(read_header)
+    CMD="ffuf -w '${WORDLIST_DIR}':FUZZ -u '${URL%/}/FUZZ.php'"
+    [[ -n "$HEADER" ]] && CMD+=" ${HEADER}"
+    run_command "$CMD"
+}
+
+ffuf_subdomain() {
+    read -r -p "Enter example target URL (example: http://academy.htb or http://10.10.10.10:80): " URL
+    HEADER=$(read_header)
+    read -r host port <<< "$(extract_host_port "$URL")"
+    if [[ -z "$host" || "$host" == "/" ]]; then
+        read -r -p "Couldn't parse host. Enter base domain (e.g. academy.htb): " host
+    fi
+    base_url="$URL"
+    CMD="ffuf -w '${WORDLIST_SUB}':FUZZ -u '${base_url%/}/' -H 'Host: FUZZ.${host}'"
+    [[ -n "$HEADER" ]] && CMD+=" ${HEADER}"
+    run_command "$CMD"
+}
+
+ffuf_param_get() {
+    read -r -p "Enter target URL (example: http://admin.academy.htb:80/admin/admin.php): " URL
+    HEADER=$(read_header)
+    CMD="ffuf -w '${WORDLIST_PARAMS}':FUZZ -u '${URL}?FUZZ=key'"
+    [[ -n "$HEADER" ]] && CMD+=" ${HEADER}"
+    run_command "$CMD"
+}
+
+ffuf_param_post() {
+    read -r -p "Enter target URL (example: http://admin.academy.htb:80/admin/admin.php): " URL
+    HEADER=$(read_header)
+    CMD="ffuf -w '${WORDLIST_PARAMS}':FUZZ -u '${URL}' -X POST -d 'FUZZ=anything'"
+    [[ -n "$HEADER" ]] && CMD+=" ${HEADER}"
+    run_command "$CMD"
+}
+
+dirsearch_menu() {
+    read -r -p "Enter URL for dirsearch (example: http://10.10.10.10:8080/): " URL
+    HEADER=$(read_header)
+    CMD="dirsearch -u '${URL%/}/'"
+    [[ -n "$HEADER" ]] && CMD+=" ${HEADER}"
+    run_command "$CMD"
+}
+
+wfuzz_menu() {
+    printf "wfuzz subdomain mode will use the subdomain wordlist to brute-force Host headers.\n"
+    read -r -p "Enter base domain / URL (example: http://example.com or http://10.10.10.10:80): " URL
+    read -r host port <<< "$(extract_host_port "$URL")"
+    if [[ -z "$host" || "$host" == "/" ]]; then
+        read -r -p "Couldn't parse host. Enter base domain (example: example.com): " host
+    fi
+    read -r -p "Use default subdomain wordlist (${WORDLIST_SUB})? [Y/n]: " ans
+    if [[ "$ans" =~ ^[Nn] ]]; then
+        read -r -p "Enter path to wordlist: " custom
+        WSL="$custom"
+    else
+        WSL="$WORDLIST_SUB"
+    fi
+    CMD="wfuzz -c -w '${WSL}' --hc 400,404,403 -H 'Host: FUZZ.${host}' -u '${URL%/}' -t 100"
+    run_command "$CMD"
+}
+
+gobuster_menu() {
+    read -r -p "Enter URL for gobuster (example: http://google.com/): " URL
+    HEADER=$(read_header)
+    CMD="gobuster dir -w '${GOBUSTER_WORDLIST}' -u '${URL%/}/'"
+    [[ -n "$HEADER" ]] && CMD+=" ${HEADER}"
+    run_command "$CMD"
+}
+
+# Start
+main_menu
