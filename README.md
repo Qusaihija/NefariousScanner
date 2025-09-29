@@ -19,3 +19,6 @@ sudo rm -f /usr/local/bin/nefs
 
 ## Quick usage
 Run nefs and choose a tool + mode from the menu. The script will print the final command and ask y/n before executing.
+
+## Quick Note
+change the path of the files if you have them somewhere else.
